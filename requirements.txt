@@ -1,15 +1,12 @@
 nox
-lingua-language-detector
 furl
 tenacity
 schema
-DrissionPage
 hydra-core
-curl_cffi
-peewee
+pydoll-python
+tortoise-orm[asyncodbc]
 pymysql
 klepto
-dnspython
 pymongo
 certifi
 orjson

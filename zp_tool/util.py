@@ -224,3 +224,20 @@ class DataSanitizer:
                     data[i] = self._process_text(v)
                 elif isinstance(v, (dict, list)):
                     self.clean_data(v)
+                    
+def is_mainly_chinese(text: str, threshold: float = 0.5) -> bool:
+    if not text:
+        return False
+
+    valid = []
+    for c in text:
+        if c.isspace():
+            continue
+        if c.isalnum() or '\u4e00' <= c <= '\u9fff':
+            valid.append(c)
+
+    if not valid:
+        return False
+
+    chinese = sum(1 for c in valid if '\u4e00' <= c <= '\u9fff')
+    return chinese / len(valid) >= threshold
