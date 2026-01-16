@@ -6,30 +6,30 @@ from loguru import logger
 
 from config import Config
 
-from .drission_page_service import DrissionPageService
+from .pydoll_service import PydollService
 from .items import Job, MaskCompany, db
 
 
 class UserClient:
     def __init__(self):
-        self.drission_page_service = DrissionPageService(
-            create_logged_in_browser=True,
-            create_anonymous_browser=False,
+        self.pydoll_service = PydollService(
+            create_logged_in_tab=True,
+            create_anonymous_tab=False,
         )
 
     def greet(self):
         for job_id in Job.get_contactable_ids():
-            self.drission_page_service.greet(job_id)
+            self.pydoll_service.greet(job_id)
 
     def save_mask_company(self, group_id=3):
         assert group_id in {1, 2, 3}, "group_id must be 1, 2, or 3"
         encrypt_id = None
         while True:
             ts = int(time.time() * 1000)
-            self.drission_page_service.tab.get(
+            self.pydoll_service.tab.get(
                 f"https://www.zhipin.com/wapi/zpgeek/maskcompany/group/list.json?encryptId={encrypt_id}&groupId={group_id}&_={ts}",
             )
-            result = self.drission_page_service.tab.json
+            result = self.pydoll_service.tab.json
             if result.get("code") != 0:
                 break
             datas = result.get("zpData", {}).get("dataList", [])
@@ -58,8 +58,8 @@ class UserClient:
                 url = f"https://www.zhipin.com/wapi/zprelation/interaction/geekGetJob?page={page}&tag=5&isActive=true&_={ts}"
             else:
                 url = f"https://www.zhipin.com/wapi/zprelation/resume/geekDeliverList?page={page}&_={ts}"
-            self.drission_page_service.tab.get(url)
-            result = self.drission_page_service.tab.json
+            self.pydoll_service.tab.get(url)
+            result = self.pydoll_service.tab.json
             if result.get("code") != 0:
                 break
             datas = result.get("zpData", {}).get("cardList", [])

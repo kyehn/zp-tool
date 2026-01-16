@@ -15,35 +15,7 @@ from pydoll.protocol.fetch.events import RequestPausedEvent
 from pydoll.protocol.network.types import ErrorReason
 from pydoll.constants import ScrollPosition
 from pydoll.exceptions import ElementNotFound
-
-
-def job_to_job_detail(job: dict) -> dict:
-    return {
-        "jobInfo": {},
-        "brandComInfo": {},
-        "bossInfo": {},
-        "atsOnlineApplyInfo": {"alreadyApply": False},
-        "meta": {},
-        **(job or {}),
-    }
-
-
-class Config:
-    BASE_URL = "https://www.zhipin.com/"
-    JOB_URL = "https://www.zhipin.com/web/geek/job"
-    JOB_DETAIL_URL = "https://www.zhipin.com/job_detail"
-    LOGIN_URL = "https://www.zhipin.com/web/user/?ka=header-login"
-    LARGE_SLEEP_SECONDS = 5
-    SMALL_SLEEP_SECONDS = 1
-    TIMEOUT_SECONDS = 5
-
-    class cfg:
-        max_page = 5
-        greeting = "您好"
-        generate_greeting = False
-        greeting_prompt = ""
-        bio = ""
-
+from config import Config
 
 def fix_salary_string(text):
     result = []
@@ -136,9 +108,6 @@ class PydollService:
         options.binary_location = self._find_chromium_binary()
 
         self.browser = Chrome(options=options)
-        self.tab = None
-        self.logged_in_tab = None
-        self.anonymous_tab = None
 
     async def __aenter__(self):
         await self.start()
@@ -168,14 +137,16 @@ class PydollService:
             with logger.catch():
                 logger.exception("browser stop failed")
 
+
+
     def switch_to_logged_in_tab(self) -> bool:
-        if self.logged_in_tab:
+        if hasattr(self, "logged_in_tab") and self.logged_in_tab:
             self.tab = self.logged_in_tab
             return True
         return False
 
     def switch_to_anonymous_tab(self) -> bool:
-        if self.anonymous_tab:
+        if hasattr(self, "anonymous_tab") and self.anonymous_tab:
             self.tab = self.anonymous_tab
             return True
         return False
@@ -227,7 +198,8 @@ class PydollService:
                 pass
 
     async def dismiss_dialog(self):
-        dialogs = await self.tab.find_all(class_name="dialog-container", timeout=Config.SMALL_SLEEP_SECONDS)
+        return
+        dialogs = await self.tab.find(class_name="dialog-container", timeout=Config.SMALL_SLEEP_SECONDS, find_all=True)
         for dialog in dialogs:
             with logger.catch():
                 text = await dialog.text
@@ -237,6 +209,7 @@ class PydollService:
                         await close_button.click()
 
     async def resolve_block(self):
+        return
         while "safe/verify-slider" in (self.tab.url or ""):
             time.sleep(Config.LARGE_SLEEP_SECONDS)
         if any(x in (self.tab.url or "") for x in ("job_detail", "403.html", "error.html")):
@@ -322,16 +295,16 @@ class PydollService:
                 })
         return job_list
 
-    async def get_job_detail(self, job: dict) -> dict:
+    async def get_job_detail(self, job_detail: dict) -> dict:
         self.switch_to_anonymous_tab()
         try:
             with logger.catch():
-                await self.tab.go_to(furl(Config.JOB_DETAIL_URL).add(path=f"/{job.get('encryptJobId')}.html").url)
+                await self.tab.go_to(furl(Config.JOB_DETAIL_URL).add(path=f"/{job_detail.get('jobInfo').get('encryptId')}.html").url)
             header = await self.tab.query(".detail-content-header", raise_exc=False)
             if header:
                 with logger.catch():
                     await header.wait_until(is_visible=True,timeout=Config.LARGE_SLEEP_SECONDS)
-            job_detail = job_to_job_detail(job)
+            
             with logger.catch():
                 btns = await self.tab.query(".btn.btn-more, .btn.btn-startchat", raise_exc=False)
                 already_apply = True
@@ -513,14 +486,3 @@ class PydollService:
             await self.dismiss_dialog()
         except Exception:
             pass
-
-
-async def default_context_example():
-    async with PydollService() as service:
-        jobs = await service.get_joblist(furl(Config.JOB_URL).add({"query": "python"}).url)
-        for job in jobs:
-          print(await service.get_job_detail(job))
-        time.sleep(Config.LARGE_SLEEP_SECONDS * 10)
-
-
-asyncio.run(default_context_example())

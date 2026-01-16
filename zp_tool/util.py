@@ -217,13 +217,13 @@ class DataSanitizer:
                 if isinstance(v, str) and k in self.TARGET_KEYS:
                     data[k] = self._process_text(v)
                 elif isinstance(v, (dict, list)):
-                    self.clean_data(v)
+                    self.clean(v)
         elif isinstance(data, list):
             for i, v in enumerate(data):
                 if isinstance(v, str):
                     data[i] = self._process_text(v)
                 elif isinstance(v, (dict, list)):
-                    self.clean_data(v)
+                    self.clean(v)
                     
 def is_mainly_chinese(text: str, threshold: float = 0.5) -> bool:
     if not text:
