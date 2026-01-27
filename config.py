@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from furl import furl
 from klepto.archives import dict_archive
 from omegaconf import DictConfig
@@ -18,4 +20,4 @@ class Config:
     SMALL_SLEEP_SECONDS = 1.2
     LARGE_SLEEP_SECONDS = 6
     MAX_RETRIES_ALLOWED = 3
-    klepto_archive = dict_archive()
+    citys_path = Path(__file__).parent / "database/city.json"

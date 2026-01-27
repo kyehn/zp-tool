@@ -1,56 +1,66 @@
+import asyncio
 import time
 from pathlib import Path
 
 import orjson
 from loguru import logger
+from tortoise import Tortoise
 
 from config import Config
 
-from .drission_page_service import DrissionPageService
-from .items import Job, MaskCompany, db
+from .items import Job, MaskCompany
+from .pydoll_service import PydollService
 
 
 class UserClient:
     def __init__(self):
-        self.drission_page_service = DrissionPageService(
-            create_logged_in_browser=True,
-            create_anonymous_browser=False,
+        self.pydoll_service = PydollService(
+            create_logged_in_tab=True,
+            create_anonymous_tab=False,
         )
 
-    def greet(self):
-        for job_id in Job.get_contactable_ids():
-            self.drission_page_service.greet(job_id)
+    async def greet(self):
+        ids = await Job.get_contactable_ids()
+        for job_id in ids:
+            await self.pydoll_service.greet(job_id)
 
-    def save_mask_company(self, group_id=3):
+    async def save_mask_company(self, group_id=3):
         assert group_id in {1, 2, 3}, "group_id must be 1, 2, or 3"
         encrypt_id = None
         while True:
             ts = int(time.time() * 1000)
-            self.drission_page_service.tab.get(
+            response = await self.pydoll_service.tab.request.get(
                 f"https://www.zhipin.com/wapi/zpgeek/maskcompany/group/list.json?encryptId={encrypt_id}&groupId={group_id}&_={ts}",
             )
-            result = self.drission_page_service.tab.json
+            result = response.json()
             if result.get("code") != 0:
                 break
             datas = result.get("zpData", {}).get("dataList", [])
             if not datas:
                 break
+
             for data in datas:
                 with logger.catch():
-                    MaskCompany.insert({
-                        MaskCompany.com_id: data["comId"],
-                        MaskCompany.encrypt_id: data["encryptId"],
-                        MaskCompany.com_name: data.get("comName"),
-                        MaskCompany.link_com_num: data.get("linkComNum", 0),
-                        MaskCompany.encrypt_com_id: data["encryptComId"],
-                    }).on_conflict_replace().execute()
+                    await MaskCompany.update_or_create(
+                        com_id=data["comId"],
+                        defaults={
+                            "encrypt_id": data["encryptId"],
+                            "com_name": data.get("comName"),
+                            "link_com_num": data.get("linkComNum", 0),
+                            "encrypt_com_id": data["encryptComId"],
+                        },
+                    )
+
             if not result.get("zpData", {}).get("hasMore", False):
                 print("No more pages.")
                 break
-            encrypt_id = datas[-1]["encryptId"]
-            time.sleep(Config.LARGE_SLEEP_SECONDS)
 
-    def save_relation(self, group="interaction", repo_path=None) -> None:
+            encrypt_id = datas[-1]["encryptId"]
+            await asyncio.sleep(Config.LARGE_SLEEP_SECONDS)
+
+    async def save_relation(self, group="interaction", repo_path=None) -> None:
+        conn = Tortoise.get_connection("default")
+
         page = 1
         while True:
             ts = int(time.time() * 1000)
@@ -58,13 +68,15 @@ class UserClient:
                 url = f"https://www.zhipin.com/wapi/zprelation/interaction/geekGetJob?page={page}&tag=5&isActive=true&_={ts}"
             else:
                 url = f"https://www.zhipin.com/wapi/zprelation/resume/geekDeliverList?page={page}&_={ts}"
-            self.drission_page_service.tab.get(url)
-            result = self.drission_page_service.tab.json
+
+            response = await self.pydoll_service.tab.request.get(url)
+            result = response.json()
             if result.get("code") != 0:
                 break
             datas = result.get("zpData", {}).get("cardList", [])
             if not datas:
                 break
+
             for data in datas:
                 with logger.catch():
                     sql = """
@@ -73,10 +85,8 @@ class UserClient:
                     ON DUPLICATE KEY UPDATE
                         contacted = VALUES(contacted)
                     """
-                    db.execute_sql(
-                        sql,
-                        (data.get("encryptJobId"), True),
-                    )
+                    await conn.execute_query(sql, [data.get("encryptJobId"), True])
+
                     if repo_path:
                         with (
                             logger.catch(),
@@ -92,8 +102,9 @@ class UserClient:
                                 indent=4,
                                 ensure_ascii=False,
                             )
+
             if not result.get("zpData", {}).get("hasMore", False):
                 logger.warning("No more pages.")
                 break
             page += 1
-            time.sleep(Config.LARGE_SLEEP_SECONDS)
+            await asyncio.sleep(Config.LARGE_SLEEP_SECONDS)

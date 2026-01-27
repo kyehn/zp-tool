@@ -1,182 +1,143 @@
 import atexit
 import os
 import random
+import ssl
 
 import orjson
-from klepto import lru_cache
 from loguru import logger
-from peewee import (
-    BigIntegerField,
-    BooleanField,
-    CharField,
-    DateTimeField,
-    InterfaceError,
-    Model,
-    OperationalError,
-    SmallIntegerField,
-    VirtualField,
-)
-from playhouse.db_url import parse
-from playhouse.mysql_ext import JSONField
-from playhouse.pool import PooledMySQLDatabase
-from playhouse.shortcuts import ReconnectMixin
 from tenacity import retry, stop_after_attempt, wait_fixed
+from tortoise import Tortoise, fields
+from tortoise.backends.base.config_generator import expand_db_url
+from tortoise.exceptions import OperationalError
+from tortoise.expressions import Q
+from tortoise.models import Model
 
 from config import Config
 
 
-class ReconnectPooledMySQLDatabase(ReconnectMixin, PooledMySQLDatabase):
-    pass
+async def init_db():
+    ctx = ssl.create_default_context()
+    conn_base = expand_db_url(os.environ["MYSQL_URL"])
+    db_config = {
+        "connections": {
+            "default": {
+                "engine": conn_base["engine"],
+                "credentials": {
+                    **conn_base["credentials"],
+                    "ssl": ctx,
+                },
+            }
+        },
+        "apps": {
+            "models": {
+                "models": ["zp_tool.items"],
+                "default_connection": "default",
+            }
+        },
+    }
+    await Tortoise.init(config=db_config)
+    await Tortoise.generate_schemas(safe=True)
 
 
-db = ReconnectPooledMySQLDatabase(
-    **parse(os.environ["MYSQL_URL"]),
-    max_connections=12,
-    stale_timeout=300,
-    ssl_verify_identity=True,
-    autocommit=False,
-    autoconnect=True,
-    thread_safe=True,
-    connect_timeout=10,
-    read_timeout=30,
-    write_timeout=30,
-)
-
-
-def close_db():
-    if db is not None and not db.is_closed():
-        db.commit()
-        db.close()
-
-
-atexit.register(close_db)
+async def close_db():
+    await Tortoise.close_connections()
 
 
 class MaskCompany(Model):
-    com_id = BigIntegerField(primary_key=True)
-    encrypt_id = CharField(null=True)
-    com_name = CharField(null=True)
-    link_com_num = SmallIntegerField(default=0)
-    encrypt_com_id = CharField(null=True)
+    com_id = fields.BigIntField(primary_key=True)
+    encrypt_id = fields.CharField(max_length=512, null=True)
+    com_name = fields.CharField(max_length=512, null=True)
+    link_com_num = fields.SmallIntField(default=0)
+    encrypt_com_id = fields.CharField(max_length=512, null=True)
 
     class Meta:
-        database = db
-        db_table = "mask_company"
+        table = "mask_company"
 
 
 class UserBlack(Model):
-    user_id = BigIntegerField(primary_key=True)
-    name = CharField(null=False)
-    avatar = CharField(null=True)
-    security_id = CharField(null=False)
-    info = CharField(null=True)
-    user_source = SmallIntegerField(default=0, null=True)
+    user_id = fields.BigIntField(primary_key=True)
+    name = fields.CharField(max_length=512, null=False)
+    avatar = fields.CharField(max_length=512, null=True)
+    security_id = fields.CharField(max_length=512, null=False)
+    info = fields.CharField(max_length=512, null=True)
+    user_source = fields.SmallIntField(default=0, null=True)
 
     class Meta:
-        database = db
-        db_table = "user_black"
+        table = "user_black"
 
 
 class Job(Model):
-    id = CharField(primary_key=True)
-    acceptable = BooleanField(null=True)
-    contacted = BooleanField(null=True)
-    last_inspection_time = DateTimeField(null=True)
-    detail = JSONField(null=True)
-    user_id = VirtualField(CharField)
-    brand_id = VirtualField(CharField)
+    id = fields.CharField(primary_key=True, max_length=512)
+    acceptable = fields.BooleanField(null=True)
+    contacted = fields.BooleanField(null=True)
+    last_inspection_time = fields.DatetimeField(null=True)
+    detail = fields.JSONField(null=True)
+    user_id = fields.CharField(max_length=512, null=True, generated=True)
+    brand_id = fields.CharField(max_length=512, null=True, generated=True)
 
     class Meta:
-        database = db
-        db_table = "job"
-
-    @retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
-    def save_or_insert(self) -> bool:
-        n = self.save(force_insert=False)
-        if n == 0:
-            self.save(force_insert=True)
-        if random.random() < 0.1:
-            db.commit()
+        table = "job"
 
     @classmethod
-    def get_contactable_ids(cls) -> list[str]:
-        result = (
-            cls
-            .select(cls.id)
-            .where(
-                (cls.contacted == False) & (cls.acceptable == True),  # noqa: E712
-            )
+    async def get_contactable_ids(cls) -> list[str]:
+        return (
+            await cls
+            .filter(contacted=False, acceptable=True)
             .limit(40)
+            .values_list("id", flat=True)
         )
-        return [row.id for row in result]
 
-    @lru_cache(maxsize=1024, cache=Config.klepto_archive, keymap=lambda self: self.id)
-    def is_acceptable(self) -> bool:
+    async def is_acceptable(self) -> bool:
         result = True
         if not self.detail:
             return result
         data = self.detail
         while isinstance(data, str):
             data = orjson.loads(data)
+
         brand_name = data.get("brandComInfo", {}).get("brandName")
         if brand_name:
             result &= (
-                not MaskCompany
-                .select()
-                .where(
-                    (MaskCompany.com_name.is_null(False))
-                    & (MaskCompany.com_name.contains(brand_name)),
-                )
+                not await MaskCompany
+                .filter(com_name__isnull=False, com_name__contains=brand_name)
                 .limit(1)
                 .exists()
             )
+
         boss_name = data.get("bossInfo", {}).get("name")
         if brand_name and boss_name:
             result &= (
-                not UserBlack
-                .select()
-                .where(
-                    (UserBlack.info.is_null(False))
-                    & (UserBlack.name.is_null(False))
-                    & (UserBlack.info.contains(brand_name))
-                    & (UserBlack.name == boss_name),
+                not await UserBlack
+                .filter(
+                    info__isnull=False,
+                    name__isnull=False,
+                    info__contains=brand_name,
+                    name=boss_name,
                 )
                 .limit(1)
                 .exists()
             )
-        return result & (
-            not Job
-            .select()
-            .where(
-                Job.contacted
-                & (
-                    (
-                        self.user_id
-                        & (Job.user_id.is_null(False))
-                        & (Job.user_id == self.user_id)
-                    )
-                    | (
-                        ("1000人" not in self.detail)
-                        & bool(self.brand_id)
-                        & (Job.brand_id.is_null(False))
-                        & (Job.brand_id == self.brand_id)
-                    )
-                ),
-            )
-            .limit(1)
-            .exists()
-        )
+
+        condition = Q(contacted=True)
+
+        user_match = Q(user_id=self.user_id) & Q(user_id__isnull=False)
+
+        brand_match = Q()
+        if "1000人" not in self.detail and self.brand_id:
+            brand_match = Q(brand_id=self.brand_id) & Q(brand_id__isnull=False)
+
+        condition &= user_match | brand_match
+
+        exists_in_job = await Job.filter(condition).limit(1).exists()
+
+        return result and not exists_in_job
 
     @classmethod
-    @logger.catch(exception=(OperationalError, InterfaceError))
-    @lru_cache(maxsize=1024, cache=Config.klepto_archive, ignore=("cls"))
-    def is_resolved(cls, job_id: str) -> bool:
+    async def is_resolved(cls, job_id: str) -> bool:
         return (
-            cls
-            .select()
-            .where(
-                (cls.id == job_id) & (cls.contacted or not cls.acceptable),
-            )
+            await cls
+            .filter(id=job_id)
+            .filter(Q(contacted=True) | Q(acceptable=False))
             .limit(1)
             .exists()
         )

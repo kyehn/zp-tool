@@ -1,13 +1,12 @@
-nox
 furl
 tenacity
 schema
 hydra-core
 pydoll-python
-tortoise-orm[asyncodbc]
-pymysql
-klepto
+tortoise-orm[asyncmy]
+cashews[diskcache]
 pymongo
+dnspython
 certifi
 orjson
 loguru
@@ -15,3 +14,4 @@ google-genai
 arrow
 crawlee
 python-dotenv
+invoke
