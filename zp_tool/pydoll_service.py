@@ -135,7 +135,7 @@ class PydollService:
         await self.get_citys()
 
     async def get_citys(self):
-        if not Config.cfg.citys_path.exists():
+        if not Config.citys_path.exists():
             r = await self.tab.request.get(Config.CITY_API_URL)
             data = r.json()
             if data.get("message") == "Success":
@@ -155,7 +155,7 @@ class PydollService:
                             extract_recursive(item["subLevelModelList"])
 
                 extract_recursive(zp_data.get("cityList", []))
-                with cls._citys_path.open("w", encoding="utf-8") as f:
+                with Config.citys_path.open("w", encoding="utf-8") as f:
                     json.dump(
                         mapping,
                         f,

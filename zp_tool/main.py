@@ -28,7 +28,6 @@ sanitizer = DataSanitizer()
 
 
 async def main() -> None:
-
     await init_db()
     service_locator.set_configuration(
         Configuration(log_level="INFO", purge_on_start=False)
@@ -42,9 +41,7 @@ async def main() -> None:
         retry_on_blocked=False,
     )
 
-    pydoll_service = PydollService(
-        create_logged_in_tab=Config.cfg.logged_in_browser,
-    )
+    pydoll_service = PydollService()
     await pydoll_service.start()
 
     @crawler.router.handler("list")
@@ -105,8 +102,6 @@ async def main() -> None:
                 return
             try:
                 job = await Job.get_or_none(id=job_id)
-
-                # 如果数据库中没有，则创建一个新实例
                 if job is None:
                     job = Job(id=job_id)
                 job.acceptable = job_detail_schema.is_valid(data)

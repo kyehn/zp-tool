@@ -1,4 +1,5 @@
 from __future__ import annotations
+import tracemalloc
 
 import asyncio
 import inspect
@@ -10,15 +11,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 import hydra
-from loguru import Record, logger
+from loguru import logger
 from omegaconf import DictConfig
 
 from config import Config
 from zp_tool.user_client import UserClient
 
+tracemalloc.start()
 
 class InterceptHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
+    def emit(self, record) -> None:
         # Get corresponding Loguru level if it exists.
         try:
             level: str | int = logger.level(record.levelname).name
@@ -41,7 +43,7 @@ class InterceptHandler(logging.Handler):
         )
 
 
-def formatter(record: Record) -> str:
+def formatter(record) -> str:
     fmt = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
     if record["extra"]:
         fmt += " | {extra}"
@@ -72,6 +74,7 @@ logger.add(
 )
 
 logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
