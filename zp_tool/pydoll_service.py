@@ -1,4 +1,6 @@
 import asyncio
+import fnmatch
+import json
 import os
 import re
 import shutil
@@ -12,10 +14,12 @@ from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
 from pydoll.constants import ScrollPosition
 from pydoll.exceptions import ElementNotFound
-from pydoll.protocol.fetch.events import RequestPausedEvent
+from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
 from pydoll.protocol.network.types import ErrorReason
 
 from config import Config
+from zp_tool.items import Job
+from zp_tool.util import generate_text
 
 
 def fix_salary_string(text):
@@ -135,7 +139,7 @@ class PydollService:
         await self.get_citys()
 
     async def get_citys(self):
-        if not Config.cfg.citys_path.exists():
+        if not Config.citys_path.exists():
             r = await self.tab.request.get(Config.CITY_API_URL)
             data = r.json()
             if data.get("message") == "Success":
@@ -155,7 +159,7 @@ class PydollService:
                             extract_recursive(item["subLevelModelList"])
 
                 extract_recursive(zp_data.get("cityList", []))
-                with cls._citys_path.open("w", encoding="utf-8") as f:
+                with Config.citys_path.open("w", encoding="utf-8") as f:
                     json.dump(
                         mapping,
                         f,
@@ -408,8 +412,8 @@ class PydollService:
             )
             if detail_figure:
                 job_detail["bossInfo"]["tiny"] = detail_figure.get_attribute("src")
-        job_detail["jobInfo"]["postDescription"] = await self.tab.query(
-            ".job-sec-text"
+        job_detail["jobInfo"]["postDescription"] = await (
+            await self.tab.query(".job-sec-text")
         ).text
         company_scale = await self.tab.query(".sider-company .icon-scale").text
         job_detail["brandComInfo"]["scaleName"] = (
@@ -465,11 +469,11 @@ class PydollService:
         element = await self.tab.query(
             ".btn.btn-more, .btn.btn-startchat, .error-content"
         )
-        if any(word in element.text for word in ("继续", "更多", "页面不存在")):
+        if any(word in await element.text for word in ("继续", "更多", "页面不存在")):
             job.contacted = True
             return
-        if "异常" in txt:
-            raise ElementNotFound(element.text)
+        if "异常" in await element.text:
+            raise ElementNotFound((await element.text))
         description = await self.tab.query(".job-sec-text").text
         name = await self.tab.query("h1").text
         redirect_url = Config.BASE_URL + element.get_attribute("redirect-url")

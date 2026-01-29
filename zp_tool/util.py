@@ -25,13 +25,13 @@ class CityUtils:
         if cls._citys is not None:
             return cls._citys
         try:
-            with Config.cfg.citys_path.open("rb") as f:
+            with Config.citys_path.open("rb") as f:
                 content = f.read()
                 if not content:
                     raise ValueError("City file is empty")
                 cls._citys = orjson.loads(content)
         except (orjson.JSONDecodeError, ValueError) as e:
-            Config.cfg.citys_path.unlink(missing_ok=True)
+            Config.citys_path.unlink(missing_ok=True)
             exit(1)
 
         return cls._citys

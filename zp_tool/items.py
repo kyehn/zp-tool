@@ -81,8 +81,7 @@ class Job(Model):
     @classmethod
     async def get_contactable_ids(cls) -> list[str]:
         return (
-            await cls
-            .filter(contacted=False, acceptable=True)
+            await cls.filter(contacted=False, acceptable=True)
             .limit(40)
             .values_list("id", flat=True)
         )
@@ -98,8 +97,9 @@ class Job(Model):
         brand_name = data.get("brandComInfo", {}).get("brandName")
         if brand_name:
             result &= (
-                not await MaskCompany
-                .filter(com_name__isnull=False, com_name__contains=brand_name)
+                not await MaskCompany.filter(
+                    com_name__isnull=False, com_name__contains=brand_name
+                )
                 .limit(1)
                 .exists()
             )
@@ -107,8 +107,7 @@ class Job(Model):
         boss_name = data.get("bossInfo", {}).get("name")
         if brand_name and boss_name:
             result &= (
-                not await UserBlack
-                .filter(
+                not await UserBlack.filter(
                     info__isnull=False,
                     name__isnull=False,
                     info__contains=brand_name,
@@ -123,7 +122,7 @@ class Job(Model):
         user_match = Q(user_id=self.user_id) & Q(user_id__isnull=False)
 
         brand_match = Q()
-        if "1000人" not in self.detail and self.brand_id:
+        if "1000人" not in str(self.detail) and self.brand_id:
             brand_match = Q(brand_id=self.brand_id) & Q(brand_id__isnull=False)
 
         condition &= user_match | brand_match
@@ -135,8 +134,7 @@ class Job(Model):
     @classmethod
     async def is_resolved(cls, job_id: str) -> bool:
         return (
-            await cls
-            .filter(id=job_id)
+            await cls.filter(id=job_id)
             .filter(Q(contacted=True) | Q(acceptable=False))
             .limit(1)
             .exists()

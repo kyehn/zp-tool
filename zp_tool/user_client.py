@@ -90,9 +90,9 @@ class UserClient:
                     if repo_path:
                         with (
                             logger.catch(),
-                            Path(f"{repo_path}/{data.get('encryptJobId')}.json").open(
-                                "w",
-                                encoding="utf-8",
+                            Path(repo_path)
+                            / f"{data.get('encryptJobId')}.json".open(
+                                "w", encoding="utf-8"
                             ) as f,
                         ):
                             orjson.dump(

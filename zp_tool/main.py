@@ -28,7 +28,6 @@ sanitizer = DataSanitizer()
 
 
 async def main() -> None:
-
     await init_db()
     service_locator.set_configuration(
         Configuration(log_level="INFO", purge_on_start=False)
@@ -42,9 +41,7 @@ async def main() -> None:
         retry_on_blocked=False,
     )
 
-    pydoll_service = PydollService(
-        create_logged_in_tab=Config.cfg.logged_in_browser,
-    )
+    pydoll_service = PydollService()
     await pydoll_service.start()
 
     @crawler.router.handler("list")
@@ -105,8 +102,6 @@ async def main() -> None:
                 return
             try:
                 job = await Job.get_or_none(id=job_id)
-
-                # 如果数据库中没有，则创建一个新实例
                 if job is None:
                     job = Job(id=job_id)
                 job.acceptable = job_detail_schema.is_valid(data)
@@ -115,10 +110,10 @@ async def main() -> None:
                 job.contacted = False
                 job.last_inspection_time = arrow.Arrow.now().datetime
                 await job.save()
+                logger.info(f"Job saved: {job.id}")
             except Exception as e:
                 logger.error(f"入库失败！报错类型: {type(e).__name__}")
                 logger.error(f"报错详情: {str(e)}")
-            logger.info(f"Job saved: {job.id}")
         else:
             logger.error("Failed to retrieve valid job detail data")
 
