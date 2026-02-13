@@ -1,0 +1,42 @@
+name: export-mongo
+
+on:
+  schedule:
+    - cron: 0 18 * * *
+  workflow_dispatch:
+
+jobs:
+  export-mongo:
+    strategy:
+      matrix:
+        include:
+          - repository: zpgeek-job-detail
+            collection: job_detail
+          - repository: zpgeek-job
+            collection: job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: actions/checkout@main
+        with:
+          repository: ${{ github.actor }}/${{ matrix.repository }}
+          fetch-depth: "2"
+          token: ${{ secrets.TOKEN }}
+          path: ${{ matrix.repository }}
+      - uses: ankane/setup-mongodb@v1
+      - run: mongoexport --uri="${{ secrets.MONGO_URL }}" --db="zpgeek" --collection="${{ matrix.collection }}" --out="export.jsonl" --quiet
+      - uses: actions/setup-python@main
+        with:
+          python-version: 3.13
+      - run: |
+          python database/export_mongo_${{ matrix.repository }}.py
+          git config --global commit.verbose false
+          git config --global commit.quiet true
+          git config --global http.postBuffer 524288000
+      - uses: stefanzweifel/git-auto-commit-action@master
+        with:
+          repository: ${{ matrix.repository }}
+          commit_author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
+          add_options: "--all"
+          skip_dirty_check: true
+          

@@ -1,0 +1,43 @@
+name: get
+
+on:
+  schedule:
+        - cron: 0 */4 * * *
+  workflow_dispatch:
+
+jobs:
+  get:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: actions/checkout@main
+        with:
+          repository: ${{ github.actor }}/zp-tool-config
+          path: config
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-python@main
+        with:
+          python-version: 3.13
+      - run: |
+          sudo apt-get update && sudo apt-get install -y age xvfb x11-xkb-utils xauth xfonts-base xkb-data
+          wget --output-document=botbrowser.deb $(curl --silent https://api.github.com/repos/botswin/BotBrowser/releases/latest | jq --raw-output '.assets[] | select(.name | contains("x86_64") and contains(".deb")) | .browser_download_url')
+          sudo dpkg --install botbrowser.deb || sudo apt-get install --fix-broken --yes
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv venv
+          uv pip install -r requirements.txt --upgrade
+          mkdir --parents .config/age
+          echo '${{ secrets.AGE_SECRET_KEY }}' > .config/age/key.txt
+          age --decrypt --identity .config/age/key.txt --output .env config/.env.age
+          age --decrypt --identity .config/age/key.txt --output config.yaml config/config.yaml.age
+          age --decrypt --identity .config/age/key.txt --output models.py config/models.py.age
+          set -a
+          source .env
+          source .venv/bin/activate
+          set +a
+          Xvfb :99 -screen 0 1920x1080x24 &
+          export DISPLAY=:99
+          while true
+          do
+          python app.py ++logged_in_browser=false
+          sleep 30
+          done
