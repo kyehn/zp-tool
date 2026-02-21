@@ -1,0 +1,57 @@
+name: get
+
+on:
+  schedule:
+        - cron: 0 */4 * * *
+  workflow_dispatch:
+
+jobs:
+  get:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: actions/checkout@main
+        with:
+          repository: ${{ github.actor }}/zp-tool-config
+          path: config
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-python@main
+        with:
+          python-version: 3.13
+      - run: |
+          sudo apt-get update && sudo apt-get install -y xvfb fluxbox dbus-x11 ffmpeg fonts-noto-cjk fonts-noto-color-emoji libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2t64 libpangocairo-1.0-0 libxshmfence1 libglu1-mesa
+          sudo mkdir --parents /opt/fingerprint-chromium
+          curl --silent -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest | jq --raw-output '.assets[] | select(.name | contains("x86_64") and contains(".tar.xz")) | .browser_download_url' | xargs curl --location | sudo tar --extract --xz --strip-components=1 --directory /opt/fingerprint-chromium
+          sudo ln --symbolic --force /opt/fingerprint-chromium/chrome /usr/local/bin/chrome
+          sudo chmod +x /usr/local/bin/chrome
+          curl --location "https://dl.filippo.io/age/latest?for=linux/amd64" --output age.tar.gz
+          tar --extract --file age.tar.gz
+          sudo cp age/age age/age-keygen /usr/local/bin/
+          rm --recursive --force age age.tar.gz
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv venv
+          uv pip install -r requirements.txt --upgrade
+          mkdir --parents .config/age
+          echo '${{ secrets.AGE_SECRET_KEY }}' > .config/age/key.txt
+          age --decrypt --identity .config/age/key.txt --output .env config/.env.age
+          age --decrypt --identity .config/age/key.txt --output config.yaml config/config.yaml.age
+          age --decrypt --identity .config/age/key.txt --output models.py config/models.py.age
+          rm --recursive --force .config
+          sudo timedatectl set-timezone Asia/Shanghai
+      - uses: fscarmen/warp-on-actions@v1.4
+      - run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+          dbus-run-session -- \
+          bash -c '
+              source .env
+              source .venv/bin/activate
+              fluxbox >/dev/null 2>&1 &
+              sleep 5
+              python app.py --config-dir config +ci=ci
+              sleep 15
+          '
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@main
+        with:
+          path: error
+          if-no-files-found: ignore
