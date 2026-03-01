@@ -35,7 +35,7 @@ jobs:
           echo '${{ secrets.AGE_SECRET_KEY }}' > .config/age/key.txt
           age --decrypt --identity .config/age/key.txt --output .env config/.env.age
           age --decrypt --identity .config/age/key.txt --output config.yaml config/config.yaml.age
-          age --decrypt --identity .config/age/key.txt --output models.py config/models.py.age
+          age --decrypt --identity .config/age/key.txt --output validators.py config/validators.py.age
           rm --recursive --force .config
           sudo timedatectl set-timezone Asia/Shanghai
       - uses: fscarmen/warp-on-actions@v1.4

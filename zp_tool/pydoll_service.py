@@ -1,13 +1,13 @@
+import asyncio
 import fnmatch
-import json
 import os
 import re
 import shutil
 import sys
-import time
 from pathlib import Path
 
 import orjson
+import psutil
 from loguru import logger
 from pydoll.browser.chromium import Chrome
 from pydoll.browser.options import ChromiumOptions
@@ -15,6 +15,12 @@ from pydoll.constants import ScrollPosition
 from pydoll.exceptions import ElementNotFound
 from pydoll.protocol.fetch.events import FetchEvent, RequestPausedEvent
 from pydoll.protocol.network.types import ErrorReason
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from yarl import URL
 
 from config import Config
@@ -34,9 +40,16 @@ def fix_salary_string(text):
 
 
 class PydollService:
-    def __init__(self, use_main_tab: bool = True, use_guest_tab: bool = True):
+    def __init__(
+        self,
+        use_main_tab: bool = True,
+        use_guest_tab: bool = True,
+    ) -> None:
         self.use_main_tab = use_main_tab
         self.use_guest_tab = use_guest_tab
+
+        available_gb = psutil.virtual_memory().available / (1024**3)
+
         options = ChromiumOptions()
         options.browser_preferences = {
             "profile": {
@@ -97,6 +110,7 @@ class PydollService:
             "webkit": {"webprefs": {"plugins_enabled": False}},
             "net": {"network_prediction_options": 2},
         }
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -110,31 +124,57 @@ class PydollService:
         options.add_argument("--dns-prefetch-disable")
         options.add_argument("--force-color-profile=srgb")
         options.add_argument("--disable-features=NetworkPrediction,Translate")
-        user_data_dir = os.path.join(os.path.expanduser("~"), ".config", "chromium")
+
+        if available_gb < 1:
+            options.add_argument("--renderer-process-limit=1")
+            options.add_argument("--enable-low-end-device-mode")
+            options.add_argument("--disable-background-apps")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-software-rasterizer")
+            options.add_argument("--disable-accelerated-2d-canvas")
+            options.add_argument("--disable-accelerated-video-decode")
+            options.add_argument("--single-process")
+        elif available_gb < 2:
+            options.add_argument("--renderer-process-limit=1")
+            options.add_argument("--disable-background-apps")
+            options.add_argument("--disable-extensions")
+
+        user_data_dir = os.path.join(Path("~").expanduser(), ".config", "chromium")
         options.add_argument(f"--user-data-dir={user_data_dir}")
         options.binary_location = self._find_chromium_binary()
         enc_file = next(
-            (f for f in os.listdir(".") if f.endswith(".enc") and os.path.isfile(f)),
+            (f for f in os.listdir(".") if f.endswith(".enc") and Path(f).is_file()),
             None,
         )
         if enc_file:
-            abs_path = os.path.abspath(enc_file)
+            abs_path = Path(enc_file).resolve()
             options.add_argument(f"--bot-profile={abs_path}")
             Path("~/.config/google-chrome/SingletonLock").expanduser().unlink(
-                missing_ok=True
+                missing_ok=True,
             )
             Path("~/.config/chromium/SingletonLock").expanduser().unlink(
-                missing_ok=True
+                missing_ok=True,
             )
         if hasattr(Config.cfg, "chromium_options") and hasattr(
-            Config.cfg.chromium_options, "arguments"
+            Config.cfg.chromium_options, "arguments",
         ):
             for argument in Config.cfg.chromium_options.arguments:
                 options.add_argument(argument)
         options.add_argument("--use-gl=swiftshader")
         options.add_argument("--disable-vulkan")
         options.add_argument("--disable-vulkan-fallback-to-glnext")
-        options.start_timeout = 30
+
+        if available_gb < 1:
+            options.start_timeout = 60
+        elif available_gb < 2:
+            options.start_timeout = 45
+        elif available_gb < 4:
+            options.start_timeout = 35
+        else:
+            options.start_timeout = 25
+
         self.browser = Chrome(options=options)
 
     async def __aenter__(self):
@@ -144,27 +184,33 @@ class PydollService:
     async def __aexit__(self, exc_type, exc, tb):
         await self.close()
 
-    async def start(self):
+    async def start(self) -> None:
         self.main_tab = await self.browser.start()
         self.switch_to_main_tab()
+        await self.main_tab.set_cache_disabled(True)
         await self.enable_request_blocking()
+        await self.main_tab.enable_network_events()
+        await asyncio.sleep(0.1)
         if Config.cfg.use_session_account and self.use_main_tab:
             await self.login()
         if (await self.is_logged_in()) and self.use_guest_tab:
             self.guest_context_id = await self.browser.create_browser_context()
             self.guest_tab = await self.browser.new_tab(
-                "about:blank", browser_context_id=self.guest_context_id
+                "about:blank", browser_context_id=self.guest_context_id,
             )
             self.switch_to_guest_tab()
+            await self.guest_tab.set_cache_disabled(True)
             await self.enable_request_blocking()
+            await self.guest_tab.enable_network_events()
+            await asyncio.sleep(0.1)
             await self.tab.go_to(
-                str(URL(Config.JOB_URL).with_query({"query": "python"}))
+                str(URL(Config.JOB_URL).with_query({"query": "python"})),
             )
-            time.sleep(Config.LARGE_SLEEP_SECONDS)
+            await asyncio.sleep(Config.LARGE_SLEEP_SECONDS)
         await self.get_citys()
 
-    async def get_citys(self):
-        if not Config.citys_path.exists():
+    async def get_citys(self) -> None:
+        if not Config.CITIES_PATH.exists():
             r = await self.tab.request.get(Config.CITY_API_URL)
             data = r.json()
             if data.get("message") == "Success":
@@ -174,7 +220,7 @@ class PydollService:
                     if city.get("name"):
                         mapping[city["name"]] = city["code"]
 
-                def extract_recursive(models):
+                def extract_recursive(models) -> None:
                     if not models:
                         return
                     for item in models:
@@ -184,18 +230,19 @@ class PydollService:
                             extract_recursive(item["subLevelModelList"])
 
                 extract_recursive(zp_data.get("cityList", []))
-                with Config.citys_path.open("w", encoding="utf-8") as f:
-                    json.dump(
-                        mapping,
-                        f,
-                        sort_keys=True,
-                        indent=4,
-                        ensure_ascii=False,
-                    )
+                with Config.CITIES_PATH.open("wb") as f:
+                    orjson_opts = orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS
+                    f.write(orjson.dumps(mapping, option=orjson_opts))
             else:
-                exit(1)
+                sys.exit(1)
 
-    async def close(self):
+    async def close(self) -> None:
+        if hasattr(self, "main_tab") and self.main_tab:
+            await self.main_tab.disable_network_events()
+        if hasattr(self, "guest_tab") and self.guest_tab:
+            await self.guest_tab.disable_network_events()
+        if hasattr(self, "guest_context_id") and self.guest_context_id:
+            await self.browser.dispose_browser_context(self.guest_context_id)
         if self.browser:
             await self.browser.stop()
 
@@ -211,8 +258,8 @@ class PydollService:
             return True
         return False
 
-    async def enable_request_blocking(self):
-        async def block_resource(event: RequestPausedEvent):
+    async def enable_request_blocking(self) -> None:
+        async def block_resource(event: RequestPausedEvent) -> None:
             request_id = event["params"]["requestId"]
             url = event["params"]["request"]["url"]
             for pattern in [
@@ -241,7 +288,7 @@ class PydollService:
             ]:
                 if fnmatch.fnmatch(url, pattern):
                     await self.tab.fail_request(
-                        request_id, ErrorReason.BLOCKED_BY_CLIENT
+                        request_id, ErrorReason.BLOCKED_BY_CLIENT,
                     )
                 else:
                     await self.tab.continue_request(request_id)
@@ -251,7 +298,7 @@ class PydollService:
     async def is_logged_in(self) -> bool:
         if Config.BASE_URL not in (await self.tab.current_url):
             await self.tab.go_to(
-                str(URL(Config.JOB_URL).with_query({"query": "python"}))
+                str(URL(Config.JOB_URL).with_query({"query": "python"})),
             )
         user_nav = await self.tab.find(
             class_name="user-nav",
@@ -263,14 +310,14 @@ class PydollService:
         html = await user_nav.inner_html
         return "未登录" not in html
 
-    async def login(self):
+    async def login(self) -> None:
         await self.tab.go_to(Config.BASE_URL)
-        time.sleep(Config.LARGE_SLEEP_SECONDS)
+        await asyncio.sleep(Config.LARGE_SLEEP_SECONDS)
         while not await self.is_logged_in():
             await self.tab.go_to(Config.LOGIN_URL)
-            time.sleep(360)
+            await asyncio.sleep(360)
 
-    async def dismiss_dialog(self):
+    async def dismiss_dialog(self) -> None:
         dialogs = await self.tab.find(
             class_name="dialog-container",
             timeout=Config.SMALL_SLEEP_SECONDS,
@@ -292,9 +339,9 @@ class PydollService:
                 if close_button:
                     await close_button.click()
 
-    async def resolve_block(self):
+    async def resolve_block(self) -> None:
         while "safe/verify-slider" in self.tab.url:
-            time.sleep(Config.TIMEOUT_SECONDS)
+            await asyncio.sleep(Config.TIMEOUT_SECONDS)
         if any(
             x in (self.tab.url or "") for x in ("job_detail", "403.html", "error.html")
         ):
@@ -307,7 +354,7 @@ class PydollService:
                 text = await error_content.text
                 if "无法继续" in text:
                     await self.tab.take_screenshot("error/page.png", quality=100)
-                    exit(text)
+                    sys.exit(text)
 
     def _find_chromium_binary(self) -> str:
         for name in (
@@ -320,11 +367,14 @@ class PydollService:
             path = shutil.which(name)
             if path:
                 return path
-        raise RuntimeError("chromium not found in PATH")
+        msg = "chromium not found in PATH"
+        raise RuntimeError(msg)
 
     async def get_joblist(self, url) -> list[dict]:
         self.switch_to_main_tab()
-        await self.tab.enable_network_events()
+        if not self.main_tab.network_events_enabled:
+            await self.main_tab.enable_network_events()
+            await asyncio.sleep(0.1)
         try:
             await self.tab.go_to(url)
             job_element = await self.tab.query(
@@ -340,7 +390,7 @@ class PydollService:
             if Config.cfg.use_session_account:
                 for _ in range(5):
                     await self.tab.scroll.by(ScrollPosition.DOWN, 500, smooth=True)
-                time.sleep(Config.SMALL_SLEEP_SECONDS)
+                await asyncio.sleep(Config.SMALL_SLEEP_SECONDS)
             logs = await self.tab.get_network_logs(filter="/wapi/zpgeek/search/joblist")
             job_list = []
             for log in logs:
@@ -360,19 +410,23 @@ class PydollService:
             job_cards = await job_element.find(class_name="job-card-box", find_all=True)
             for card in job_cards:
                 with logger.catch():
-                    tags = await card.query(".tag-list").find(tag_name="li", find_all=True)
+                    tags = await card.query(".tag-list").find(
+                        tag_name="li", find_all=True
+                    )
                     job_area = await card.query(".company-location").text.split("·")
                     job_name_ele = await card.query(".job-name")
+                    href = job_name_ele.get_attribute("href")
+                    job_id_match = re.search(r"/job_detail/([^/]+)\.html", href)
+                    if job_id_match is None:
+                        continue
                     job_list.append({
-                        "encryptJobId": re.search(
-                            r"/job_detail/([^/]+)\.html", job_name_ele.get_attribute("href")
-                        ).group(1),
+                        "encryptJobId": job_id_match.group(1),
                         "jobName": await job_name_ele.text,
                         "cityName": job_area[0] if len(job_area) > 0 else None,
                         "areaDistrict": job_area[1] if len(job_area) > 1 else None,
                         "businessDistrict": job_area[2] if len(job_area) > 2 else None,
                         "salaryDesc": fix_salary_string(
-                            await card.query(".job-salary").text
+                            await card.query(".job-salary").text,
                         ),
                         "brandName": await card.query(".boss-name").text,
                     "jobExperience": (await tags[0].text) if len(tags) > 0 else None,
@@ -380,18 +434,23 @@ class PydollService:
                 })
             return job_list
         finally:
-            await self.tab.disable_network_events()
+            pass
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((ElementNotFound, TimeoutError)),
+        reraise=True,
+    )
     async def get_job_detail(self, job_detail: dict) -> dict:
         self.switch_to_guest_tab()
+        job_info = job_detail.get("jobInfo") or {}
+        encrypt_id = job_info.get("encryptId")
         await self.tab.go_to(
-            str(
-                URL(Config.JOB_DETAIL_URL)
-                / f"{job_detail.get('jobInfo').get('encryptId')}.html"
-            )
+            str(URL(Config.JOB_DETAIL_URL) / f"{encrypt_id}.html"),
         )
         await (await self.tab.query(".detail-content-header")).wait_until(
-            is_visible=True, timeout=Config.TIMEOUT_SECONDS
+            is_visible=True, timeout=Config.TIMEOUT_SECONDS,
         )
         job_detail["atsOnlineApplyInfo"]["alreadyApply"] = "立即" not in (
             await (await self.tab.query(".btn.btn-more, .btn.btn-startchat")).text
@@ -417,12 +476,12 @@ class PydollService:
                 job_detail["jobInfo"]["jobStatusDesc"] = await job_status.text
         if not job_detail.get("jobInfo", {}).get("address"):
             location_address = await self.tab.query(
-                ".location-address", raise_exc=False
+                ".location-address", raise_exc=False,
             )
             if location_address:
                 job_detail["jobInfo"]["address"] = await location_address.text
             location_map = await self.tab.query(
-                ".job-location-map.js-open-map", raise_exc=False
+                ".job-location-map.js-open-map", raise_exc=False,
             )
             if location_map:
                 data_lat = location_map.get_attribute("data-lat")
@@ -432,7 +491,7 @@ class PydollService:
                         job_detail["jobInfo"]["longitude"] = parts[0]
                         job_detail["jobInfo"]["latitude"] = parts[1]
                 location_map_img = await self.tab.query(
-                    "div.job-location-map img", raise_exc=False
+                    "div.job-location-map img", raise_exc=False,
                 )
                 if location_map_img:
                     job_detail["jobInfo"]["staticMapUrl"] = (
@@ -444,7 +503,7 @@ class PydollService:
                 job_detail["brandComInfo"]["introduce"] = await sec_text.text
         if not job_detail.get("bossInfo", {}).get("tiny"):
             detail_figure = await self.tab.query(
-                "div.detail-figure img", raise_exc=False
+                "div.detail-figure img", raise_exc=False,
             )
             if detail_figure:
                 job_detail["bossInfo"]["tiny"] = detail_figure.get_attribute("src")
@@ -456,7 +515,7 @@ class PydollService:
             company_scale if "人" in company_scale else None
         )
         boss_active = await self.tab.query(
-            ".boss-active-time, .boss-online-tag", raise_exc=False
+            ".boss-active-time, .boss-online-tag", raise_exc=False,
         )
         if boss_active:
             job_detail["bossInfo"]["activeTimeDesc"] = await boss_active.text
@@ -483,7 +542,7 @@ class PydollService:
             if match:
                 job_detail["meta"]["companyFund"] = match.group(0).strip()
         school_job_sec = await self.tab.query(
-            "p.school-job-sec span", find_all=True, raise_exc=False
+            "p.school-job-sec span", find_all=True, raise_exc=False,
         )
         if school_job_sec and len(school_job_sec) > 1:
             job_detail["meta"]["graduationYear"] = (
@@ -494,20 +553,31 @@ class PydollService:
             )
         return job_detail
 
-    async def greet(self, job_id: str):
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((ElementNotFound, TimeoutError)),
+        reraise=True,
+    )
+    async def greet(self, job_id: str) -> None:
         await self.tab.go_to(str(URL(Config.JOB_DETAIL_URL) / f"{job_id}.html"))
-        job = (await Job.get_or_none(id=job_id)) or Job(id=job_id)
-        if not job.is_acceptable():
+        job = await Job.get_or_none(id=job_id)
+        if job is None:
+            job = Job(id=job_id)
+        if not await job.is_acceptable():
             job.contacted = True
+            await job.save()
             return
         element = await self.tab.query(
-            ".btn.btn-more, .btn.btn-startchat, .error-content"
+            ".btn.btn-more, .btn.btn-startchat, .error-content",
         )
-        if any(word in await element.text for word in ("继续", "更多", "页面不存在")):
+        element_text = await element.text
+        if any(word in element_text for word in ("继续", "更多", "页面不存在")):
             job.contacted = True
+            await job.save()
             return
-        if "异常" in await element.text:
-            raise ElementNotFound((await element.text))
+        if "异常" in element_text:
+            raise ElementNotFound(element_text)
         description = await self.tab.query(".job-sec-text").text
         name = await self.tab.query("h1").text
         redirect_url = Config.BASE_URL + element.get_attribute("redirect-url")
@@ -517,25 +587,23 @@ class PydollService:
             timeout=Config.TIMEOUT_SECONDS,
             raise_exc=False,
         )
-        if dialog:
-            if "已达上限" in (await dialog.text):
-                sys.exit(0)
+        if dialog and "已达上限" in (await dialog.text):
+            sys.exit(0)
         job.contacted = True
-        job.save_or_insert()
+        await job.save()
         element = await self.tab.query(".dialog-con, .chat-input")
         if "chat" in self.tab.url or ("发送" in (await element.text)):
             if "chat" not in self.tab.url and redirect_url:
                 await self.tab.go_to(redirect_url)
             greeting = Config.cfg.greeting
             if Config.cfg.generate_greeting:
-                greeting = (
-                    generate_text(
-                        f"{Config.cfg.greeting_prompt}职位名称: {name}职位描述: {description}bio: {Config.cfg.bio}"
-                    )
-                    or Config.cfg.greeting
+                prompt = (
+                    f"{Config.cfg.greeting_prompt}职位名称: {name}"
+                    f"职位描述: {description}bio: {Config.cfg.bio}"
                 )
+                greeting = generate_text(prompt) or Config.cfg.greeting
             chat_input = await self.tab.query(".input-area .chat-input")
             await chat_input.type_text(greeting, humanize=True)
-            time.sleep(Config.SMALL_SLEEP_SECONDS)
+            await asyncio.sleep(Config.SMALL_SLEEP_SECONDS)
             await self.tab.query(".btn-v2.btn-sure-v2.btn-send, .send-message").click()
-            time.sleep(Config.SMALL_SLEEP_SECONDS * 2)
+            await asyncio.sleep(Config.SMALL_SLEEP_SECONDS * 2)

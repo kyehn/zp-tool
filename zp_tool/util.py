@@ -1,7 +1,9 @@
 import os
 import re
-import threading
+import sys
+from typing import Any
 
+import cashews
 import orjson
 from google import genai
 from google.genai import errors, types
@@ -11,26 +13,22 @@ from config import Config
 
 
 class CityUtils:
-    _citys = None
-
     @classmethod
-    def get_citys(cls):
-        if cls._citys is not None:
-            return cls._citys
+    @cashews.cache(ttl=3600)
+    def get_citys(cls) -> dict[str, str]:
         try:
-            with Config.citys_path.open("rb") as f:
+            with Config.CITIES_PATH.open("rb") as f:
                 content = f.read()
                 if not content:
-                    raise ValueError("City file is empty")
-                cls._citys = orjson.loads(content)
+                    msg = "City file is empty"
+                    raise ValueError(msg)
+                return orjson.loads(content)
         except (orjson.JSONDecodeError, ValueError):
-            Config.citys_path.unlink(missing_ok=True)
-            exit(1)
-
-        return cls._citys
+            Config.CITIES_PATH.unlink(missing_ok=True)
+            sys.exit(1)
 
     @classmethod
-    def get_city_code_by_name(cls, city_name):
+    def get_city_code_by_name(cls, city_name: str) -> str | None:
         return cls.get_citys().get(city_name)
 
 
@@ -67,20 +65,31 @@ def job_to_job_detail(job: dict) -> dict:
     }
 
 
-client = genai.Client(
-    api_key=os.environ.get("GOOGLE_API_KEY"),
-    http_options=types.HttpOptions(),
-)
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            msg = "GOOGLE_API_KEY environment variable is not set"
+            raise ValueError(msg)
+        _client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(),
+        )
+    return _client
 
 
 @logger.catch(exception=errors.APIError)
-def generate_text(contents) -> str:
-    response = client.models.generate_content(
+def generate_text(contents: str) -> str:
+    response = _get_client().models.generate_content(
         model="gemini-3-flash-preview",
         contents=contents,
         config=types.GenerateContentConfig(
             thinking_config=types.ThinkingConfig(
-                thinking_budget=0, include_thoughts=False
+                thinking_budget=0, include_thoughts=False,
             ),
         ),
     )
@@ -88,21 +97,18 @@ def generate_text(contents) -> str:
 
 
 class DataSanitizer:
-    _instance = None
-    _lock = threading.Lock()
+    _instance: "DataSanitizer | None" = None
 
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            with cls._lock:
-                if not cls._instance:
-                    cls._instance = super(DataSanitizer, cls).__new__(cls)
+    def __new__(cls) -> "DataSanitizer":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):
-        if hasattr(self, "TARGET_KEYS"):
+    def __init__(self) -> None:
+        if hasattr(self, "_initialized"):
             return
 
-        self.TARGET_KEYS = {
+        self.TARGET_KEYS: frozenset[str] = frozenset({
             "postDescription",
             "introduce",
             "skills",
@@ -116,9 +122,9 @@ class DataSanitizer:
             "address",
             "locationName",
             "title",
-        }
+        })
 
-        self.KEYWORDS = [
+        self.KEYWORDS: frozenset[str] = frozenset({
             "来自BOSS直聘",
             "来自boss直聘",
             "来自Boss直聘",
@@ -130,26 +136,25 @@ class DataSanitizer:
             "直聘",
             "BOSS",
             "boss",
-        ]
+        })
 
         self.SCAN_PATTERN = re.compile("|".join(map(re.escape, self.KEYWORDS)))
-
         self.INVISIBLE_REGEX = re.compile(r"[\u200b-\u200f\uFEFF\u0000]")
-
         self.ZH_CHECK = re.compile(r"[\u4e00-\u9fa5]")
         self.ALPHANUM_CHECK = re.compile(r"[a-zA-Z0-9]")
-        self.QUOTE_CHARS = {'"', "'", "“", "”", "‘", "’"}
+        self.QUOTE_CHARS = frozenset({'"', "'", "“", "”", "‘", "’"})
+        self._initialized = True
 
-    def _should_skip_file(self, data):
+    def _should_skip(self, data: Any) -> bool:
         if isinstance(data, dict):
             if data.get("brandName") == "BOSS直聘":
                 return True
-            return any(self._should_skip_file(v) for v in data.values())
+            return any(self._should_skip(v) for v in data.values())
         if isinstance(data, list):
-            return any(self._should_skip_file(i) for i in data)
+            return any(self._should_skip(i) for i in data)
         return False
 
-    def _process_text(self, text):
+    def _process_text(self, text: str) -> str:
         if not text or not isinstance(text, str):
             return text
 
@@ -166,15 +171,14 @@ class DataSanitizer:
 
         matches.sort(key=lambda x: len(x.group()), reverse=True)
         active_matches = []
-        occupied = set()
+        occupied: set[int] = set()
 
         for m in matches:
             s, e = m.start(), m.end()
             if any(i in occupied for i in range(s, e)):
                 continue
             active_matches.append(m)
-            for i in range(s, e):
-                occupied.add(i)
+            occupied.update(range(s, e))
 
         active_matches.sort(key=lambda x: x.start(), reverse=True)
         temp_text = text
@@ -200,11 +204,10 @@ class DataSanitizer:
                 should_delete = True
 
             elif s < 25 or e > (text_len - 25):
-                if "直聘" in word:
+                is_zh_left = self.ZH_CHECK.match(left)
+                is_zh_right = self.ZH_CHECK.match(right)
+                if "直聘" in word or is_zh_left or is_zh_right:
                     should_delete = True
-                else:
-                    if self.ZH_CHECK.match(left) or self.ZH_CHECK.match(right):
-                        should_delete = True
 
             if should_delete:
                 temp_text = temp_text[:s] + temp_text[e:]
@@ -214,8 +217,8 @@ class DataSanitizer:
 
         return temp_text
 
-    def clean(self, data):
-        if self._should_skip_file(data):
+    def clean(self, data: Any) -> None:
+        if self._should_skip(data):
             return
 
         if isinstance(data, dict):
@@ -236,15 +239,10 @@ def is_mainly_chinese(text: str, threshold: float = 0.5) -> bool:
     if not text:
         return False
 
-    valid = []
-    for c in text:
-        if c.isspace():
-            continue
-        if c.isalnum() or "\u4e00" <= c <= "\u9fff":
-            valid.append(c)
+    chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    total_chars = sum(1 for c in text if not c.isspace())
 
-    if not valid:
+    if not total_chars:
         return False
 
-    chinese = sum(1 for c in valid if "\u4e00" <= c <= "\u9fff")
-    return chinese / len(valid) >= threshold
+    return chinese_chars / total_chars >= threshold

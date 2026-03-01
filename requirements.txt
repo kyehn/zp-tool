@@ -16,5 +16,4 @@ arrow
 crawlee
 python-dotenv
 invoke
-jsonpath-ng
 uvloop
