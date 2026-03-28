@@ -29,7 +29,8 @@ jobs:
         with:
           python-version: 3.13
       - run: |
-          python database/export_mongo_${{ matrix.repository }}.py
+          pip install orjson
+          python database/export_mongo_${{ matrix.collection }}.py
           git config --global commit.verbose false
           git config --global commit.quiet true
           git config --global http.postBuffer 524288000
