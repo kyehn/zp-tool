@@ -1,8 +1,8 @@
 name: get
 
 on:
-  schedule:
-        - cron: 0 */4 * * *
+  # schedule:
+        # - cron: 0 */4 * * *
   workflow_dispatch:
 
 jobs:
@@ -35,10 +35,9 @@ jobs:
           echo '${{ secrets.AGE_SECRET_KEY }}' > .config/age/key.txt
           age --decrypt --identity .config/age/key.txt --output .env config/.env.age
           age --decrypt --identity .config/age/key.txt --output config.yaml config/config.yaml.age
-          age --decrypt --identity .config/age/key.txt --output models.py config/models.py.age
+          age --decrypt --identity .config/age/key.txt --output validators.py config/validators.py.age
           rm --recursive --force .config
           sudo timedatectl set-timezone Asia/Shanghai
-      - uses: fscarmen/warp-on-actions@v1.4
       - run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
           dbus-run-session -- \
@@ -53,5 +52,5 @@ jobs:
       - if: ${{ always() }}
         uses: actions/upload-artifact@main
         with:
-          path: error
+          path: error*
           if-no-files-found: ignore

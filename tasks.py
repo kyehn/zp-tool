@@ -3,11 +3,10 @@ from pathlib import Path
 
 from invoke import task
 
-PYTHON_CMD = "patchedpython" if shutil.which("patchedpython") else "python"
-CONFIGS = [""]
+PYTHON_CMD = "patchedpython" if shutil.which("patchedpython") else "python3"
 
 
-def _clean(extra_paths=None):
+def _clean(extra_paths=None) -> None:
     paths = ["error", "__pycache__"]
     if extra_paths:
         paths.extend(extra_paths)
@@ -20,45 +19,27 @@ def _clean(extra_paths=None):
                 p.unlink()
 
 
-def _run_base(c, extra_args=None):
+def _run(c, extra_args=None) -> None:
     if Path("error").exists():
         return
-
     cmd = [PYTHON_CMD, "app.py"]
     if extra_args:
         cmd.extend(extra_args)
-
     c.run(" ".join(cmd), pty=True)
 
 
 @task
-def clean(c):
-    _clean(["storage"])
+def clean(_c, storage=False) -> None:
+    extra = ["storage"] if storage else None
+    _clean(extra)
 
 
 @task(default=True)
-def run(c, args=""):
+def run(c) -> None:
     _clean()
-    extra_args = args.split() if args else []
-    _run_base(c, extra_args)
-
+    _run(c)
 
 @task
-def rotation(c):
+def greet(c) -> None:
     _clean()
-    while True:
-        for config in CONFIGS:
-            extra_args = []
-            if config:
-                extra_args.append(f"+config={config}")
-            _run_base(c, extra_args)
-
-
-@task
-def greet(c):
-    _clean()
-    for config in CONFIGS:
-        extra_args = ["++task=greet"]
-        if config:
-            extra_args.append(f"+config={config}")
-        _run_base(c, extra_args)
+    _run(c, ["++task=greet"])

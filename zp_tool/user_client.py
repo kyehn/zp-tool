@@ -4,34 +4,47 @@ from pathlib import Path
 
 import orjson
 from loguru import logger
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from tortoise import Tortoise
 
 from config import Config
 
-from .items import Job, MaskCompany
+from .items import Job, MaskCompany, init_db
 from .pydoll_service import PydollService
 
 
 class UserClient:
-    def __init__(self):
+    def __init__(self) -> None:
         self.pydoll_service = PydollService(
-            create_logged_in_tab=True,
-            create_anonymous_tab=False,
+            use_main_tab=True,
+            use_guest_tab=False,
         )
 
-    async def greet(self):
+    async def greet(self) -> None:
+        await init_db()
         ids = await Job.get_contactable_ids()
         for job_id in ids:
             await self.pydoll_service.greet(job_id)
 
-    async def save_mask_company(self, group_id=3):
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception),
+        reraise=False,
+    )
+    async def save_mask_company(self, group_id=3) -> None:
         assert group_id in {1, 2, 3}, "group_id must be 1, 2, or 3"
         encrypt_id = None
         while True:
-            ts = int(time.time() * 1000)
-            response = await self.pydoll_service.tab.request.get(
-                f"https://www.zhipin.com/wapi/zpgeek/maskcompany/group/list.json?encryptId={encrypt_id}&groupId={group_id}&_={ts}",
-            )
+            ts = round(time.time() * 1000)
+            params = f"encryptId={encrypt_id}&groupId={group_id}&_={ts}"
+            url = f"{Config.MASK_COMPANY_URL}?{params}"
+            response = await self.pydoll_service.tab.request.get(url)
             result = response.json()
             if result.get("code") != 0:
                 break
@@ -52,22 +65,29 @@ class UserClient:
                     )
 
             if not result.get("zpData", {}).get("hasMore", False):
-                print("No more pages.")
+                logger.info("No more pages.")
                 break
 
             encrypt_id = datas[-1]["encryptId"]
             await asyncio.sleep(Config.LARGE_SLEEP_SECONDS)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception),
+        reraise=False,
+    )
     async def save_relation(self, group="interaction", repo_path=None) -> None:
-        conn = Tortoise.get_connection("default")
+        await init_db()
+        conn = await Tortoise.get_connection("default")
 
         page = 1
         while True:
-            ts = int(time.time() * 1000)
+            ts = round(time.time() * 1000)
             if group == "interaction":
-                url = f"https://www.zhipin.com/wapi/zprelation/interaction/geekGetJob?page={page}&tag=5&isActive=true&_={ts}"
+                url = f"{Config.INTERACTION_URL}?page={page}&tag=5&isActive=true&_={ts}"
             else:
-                url = f"https://www.zhipin.com/wapi/zprelation/resume/geekDeliverList?page={page}&_={ts}"
+                url = f"{Config.RESUME_URL}?page={page}&_={ts}"
 
             response = await self.pydoll_service.tab.request.get(url)
             result = response.json()
@@ -77,31 +97,24 @@ class UserClient:
             if not datas:
                 break
 
-            for data in datas:
-                with logger.catch():
+            async with conn.transaction():
+                values_list = [[d.get("encryptJobId"), True] for d in datas]
+                if values_list:
                     sql = """
                     INSERT INTO zp_item (id, contacted)
                     VALUES (%s, %s)
                     ON DUPLICATE KEY UPDATE
                         contacted = VALUES(contacted)
                     """
-                    await conn.execute_query(sql, [data.get("encryptJobId"), True])
+                    await conn.execute_query(sql, values_list)
 
-                    if repo_path:
-                        with (
-                            logger.catch(),
-                            Path(repo_path)
-                            / f"{data.get('encryptJobId')}.json".open(
-                                "w", encoding="utf-8"
-                            ) as f,
-                        ):
-                            orjson.dump(
-                                data,
-                                f,
-                                sort_keys=True,
-                                indent=4,
-                                ensure_ascii=False,
-                            )
+            for data in datas:
+                if repo_path:
+                    file_name = f"{data.get('encryptJobId')}.json"
+                    file_path = Path(repo_path) / file_name
+                    orjson_opts = orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS
+                    with file_path.open("wb") as f:
+                        f.write(orjson.dumps(data, option=orjson_opts))
 
             if not result.get("zpData", {}).get("hasMore", False):
                 logger.warning("No more pages.")
