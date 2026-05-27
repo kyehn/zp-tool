@@ -140,9 +140,10 @@ class PydollService:
             options.add_argument("--disable-background-apps")
             options.add_argument("--disable-extensions")
 
-        user_data_dir = os.path.join(Path("~").expanduser(), ".config", "chromium")
-        options.add_argument(f"--user-data-dir={user_data_dir}")
         options.binary_location = self._find_chromium_binary()
+        binary_name = Path(options.binary_location).stem
+        user_data_dir = os.path.join(Path("~").expanduser(), ".config", binary_name)
+        options.add_argument(f"--user-data-dir={user_data_dir}")
         enc_file = next(
             (f for f in os.listdir(".") if f.endswith(".enc") and Path(f).is_file()),
             None,
@@ -150,10 +151,7 @@ class PydollService:
         if enc_file:
             abs_path = Path(enc_file).resolve()
             options.add_argument(f"--bot-profile={abs_path}")
-            Path("~/.config/google-chrome/SingletonLock").expanduser().unlink(
-                missing_ok=True,
-            )
-            Path("~/.config/chromium/SingletonLock").expanduser().unlink(
+            Path(user_data_dir, "SingletonLock").unlink(
                 missing_ok=True,
             )
         if hasattr(Config.cfg, "chromium_options") and hasattr(
@@ -361,11 +359,11 @@ class PydollService:
 
     def _find_chromium_binary(self) -> str:
         for name in (
-            "chromium-browser-stable",
-            "chromium",
-            "chromium-browser",
-            "google-chrome",
             "chrome",
+            "chromium-browser-stable",
+            "chromium-browser",
+            "chromium",
+            "google-chrome",
         ):
             path = shutil.which(name)
             if path:
