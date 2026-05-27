@@ -176,6 +176,7 @@ class PydollService:
             options.start_timeout = 25
 
         self.browser = Chrome(options=options)
+        self._nav_lock = asyncio.Lock()
 
     async def __aenter__(self):
         await self.start()
@@ -373,72 +374,87 @@ class PydollService:
         raise RuntimeError(msg)
 
     async def get_joblist(self, url) -> list[dict]:
-        self.switch_to_main_tab()
-        if not self.main_tab.network_events_enabled:
-            await self.main_tab.enable_network_events()
-            await asyncio.sleep(0.1)
-        try:
-            await self.tab.go_to(url)
-            job_element = await self.tab.query(
-                ".job-list-container, .job-empty-wrapper",
-                timeout=Config.TIMEOUT_SECONDS,
-                raise_exc=False,
-            )
-            if not job_element:
-                return []
-            text = await job_element.text
-            if "没有找到相关职位" in text:
-                return []
-            if Config.cfg.use_session_account:
-                for _ in range(5):
-                    await self.tab.scroll.by(ScrollPosition.DOWN, 500, smooth=True)
-                await asyncio.sleep(Config.SMALL_SLEEP_SECONDS)
-            logs = await self.tab.get_network_logs(filter="/wapi/zpgeek/search/joblist")
-            job_list = []
-            for log in logs:
-                request_id = log.get("params", {}).get("requestId")
-                if not request_id:
-                    continue
-                try:
-                    response_body = await self.tab.get_network_response_body(request_id)
-                except KeyError:
-                    continue
-                with logger.catch(exception=orjson.JSONDecodeError):
-                    data = orjson.loads(response_body)
-                    if data.get("message") == "Success":
-                        job_list.extend(data.get("zpData", {}).get("jobList", []))
-            if job_list:
-                return job_list
-            job_cards = await job_element.find(class_name="job-card-box", find_all=True)
-            for card in job_cards:
-                with logger.catch():
-                    tags = await card.query(".tag-list").find(
-                        tag_name="li", find_all=True
-                    )
-                    job_area = await card.query(".company-location").text.split("·")
-                    job_name_ele = await card.query(".job-name")
-                    href = job_name_ele.get_attribute("href")
-                    job_id_match = re.search(r"/job_detail/([^/]+)\.html", href)
-                    if job_id_match is None:
+        async with self._nav_lock:
+            self.switch_to_main_tab()
+            if not self.main_tab.network_events_enabled:
+                await self.main_tab.enable_network_events()
+                await asyncio.sleep(0.1)
+            try:
+                await self.tab.go_to(url)
+                job_element = await self.tab.query(
+                    ".job-list-container, .job-empty-wrapper",
+                    timeout=Config.TIMEOUT_SECONDS,
+                    raise_exc=False,
+                )
+                if not job_element:
+                    return []
+                text = await job_element.text
+                if "没有找到相关职位" in text:
+                    return []
+                if Config.cfg.use_session_account:
+                    for _ in range(5):
+                        await self.tab.scroll.by(ScrollPosition.DOWN, 500, smooth=True)
+                    await asyncio.sleep(Config.SMALL_SLEEP_SECONDS)
+                logs = await self.tab.get_network_logs(
+                    filter="/wapi/zpgeek/search/joblist"
+                )
+                job_list = []
+                for log in logs:
+                    request_id = log.get("params", {}).get("requestId")
+                    if not request_id:
                         continue
-                    job_list.append({
-                        "encryptJobId": job_id_match.group(1),
-                        "jobName": await job_name_ele.text,
-                        "cityName": job_area[0] if len(job_area) > 0 else None,
-                        "areaDistrict": job_area[1] if len(job_area) > 1 else None,
-                        "businessDistrict": job_area[2] if len(job_area) > 2 else None,
-                        "salaryDesc": fix_salary_string(
-                            await card.query(".job-salary").text,
-                        ),
-                        "brandName": await card.query(".boss-name").text,
-                        "jobExperience": (await tags[0].text)
-                        if len(tags) > 0
-                        else None,
-                        "jobDegree": (await tags[1].text) if len(tags) > 1 else None,
-                    })
-            return job_list
-        finally:
-            pass
+                    try:
+                        response_body = await self.tab.get_network_response_body(
+                            request_id
+                        )
+                    except KeyError:
+                        continue
+                    with logger.catch(exception=orjson.JSONDecodeError):
+                        data = orjson.loads(response_body)
+                        if data.get("message") == "Success":
+                            job_list.extend(data.get("zpData", {}).get("jobList", []))
+                if job_list:
+                    return job_list
+                job_cards = await job_element.find(
+                    class_name="job-card-box", find_all=True
+                )
+                for card in job_cards:
+                    with logger.catch():
+                        tags = await card.query(".tag-list").find(
+                            tag_name="li", find_all=True
+                        )
+                        job_area = await card.query(".company-location").text.split("·")
+                        job_name_ele = await card.query(".job-name")
+                        href = job_name_ele.get_attribute("href")
+                        job_id_match = re.search(r"/job_detail/([^/]+)\.html", href)
+                        if job_id_match is None:
+                            continue
+                        job_list.append(
+                            {
+                                "encryptJobId": job_id_match.group(1),
+                                "jobName": await job_name_ele.text,
+                                "cityName": job_area[0] if len(job_area) > 0 else None,
+                                "areaDistrict": job_area[1]
+                                if len(job_area) > 1
+                                else None,
+                                "businessDistrict": job_area[2]
+                                if len(job_area) > 2
+                                else None,
+                                "salaryDesc": fix_salary_string(
+                                    await card.query(".job-salary").text,
+                                ),
+                                "brandName": await card.query(".boss-name").text,
+                                "jobExperience": (await tags[0].text)
+                                if len(tags) > 0
+                                else None,
+                                "jobDegree": (await tags[1].text)
+                                if len(tags) > 1
+                                else None,
+                            }
+                        )
+                return job_list
+            finally:
+                pass
 
     @retry(
         stop=stop_after_attempt(3),
