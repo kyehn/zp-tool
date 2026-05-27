@@ -388,7 +388,10 @@ class PydollService:
                 )
                 if not job_element:
                     return []
-                text = await job_element.text
+                try:
+                    text = await job_element.text
+                except (KeyError, Exception):
+                    return []
                 if "没有找到相关职位" in text:
                     return []
                 if Config.cfg.use_session_account:

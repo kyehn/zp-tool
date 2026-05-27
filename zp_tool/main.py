@@ -51,7 +51,7 @@ async def main() -> None:
 
     crawler = BasicCrawler(
         configure_logging=False,
-        abort_on_error=True,
+        abort_on_error=False,
         use_session_pool=False,
         max_request_retries=1,
         retry_on_blocked=False,
