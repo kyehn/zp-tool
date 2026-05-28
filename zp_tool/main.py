@@ -188,7 +188,7 @@ async def main() -> None:
             itertools.product(
                 Config.cfg.citys,
                 Config.cfg.querys,
-                Config.cfg.salarys,
+                Config.cfg.salarys if Config.cfg.use_session_account else [""],
             ),
         )
         state = await ctx.use_state({
@@ -199,16 +199,17 @@ async def main() -> None:
 
         if state["start"] < len(params):
             for city, query, salary in params[state["start"] : end]:
-                url = str(
-                    URL(Config.JOB_URL).with_query({
-                        "city": CityUtils.get_city_code_by_name(city),
-                        "salary": salary,
-                        "experience": Config.cfg.experience,
-                        "degree": Config.cfg.degree,
-                        "scale": Config.cfg.scale,
-                        "query": query,
-                    }),
-                )
+                query_params = {
+                    "city": CityUtils.get_city_code_by_name(city),
+                    "query": query,
+                }
+                if Config.cfg.use_session_account:
+                    query_params["experience"] = Config.cfg.experience
+                    query_params["degree"] = Config.cfg.degree
+                    query_params["scale"] = Config.cfg.scale
+                    if salary:
+                        query_params["salary"] = salary
+                url = str(URL(Config.JOB_URL).with_query(query_params))
                 requests.append(
                     Request.from_url(
                         url,

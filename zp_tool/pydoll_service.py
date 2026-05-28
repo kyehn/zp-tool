@@ -29,6 +29,8 @@ from zp_tool.util import generate_text
 
 
 def fix_salary_string(text):
+    if not text:
+        return ""
     result = []
     for char in text:
         code_point = ord(char)
