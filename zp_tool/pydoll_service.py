@@ -411,10 +411,12 @@ class PydollService:
                     for _ in range(5):
                         await self.tab.scroll.by(ScrollPosition.DOWN, 500, smooth=True)
                     await asyncio.sleep(Config.SMALL_SLEEP_SECONDS)
+
+                job_list = []
+
                 logs = await self.tab.get_network_logs(
                     filter="/wapi/zpgeek/search/joblist"
                 )
-                job_list = []
                 for log in logs:
                     request_id = log.get("params", {}).get("requestId")
                     if not request_id:
@@ -423,14 +425,38 @@ class PydollService:
                         response_body = await self.tab.get_network_response_body(
                             request_id
                         )
-                    except KeyError:
+                        with logger.catch(exception=orjson.JSONDecodeError):
+                            data = orjson.loads(response_body)
+                            if data.get("message") == "Success":
+                                job_list.extend(data.get("zpData", {}).get("jobList", []))
+                    except Exception:
                         continue
-                    with logger.catch(exception=orjson.JSONDecodeError):
-                        data = orjson.loads(response_body)
-                        if data.get("message") == "Success":
-                            job_list.extend(data.get("zpData", {}).get("jobList", []))
+
                 if job_list:
                     return job_list
+
+                try:
+                    parsed = URL(str(self.tab.url))
+                    params = dict(parsed.query)
+                    city = params.get("city", "")
+                    query = params.get("query", "")
+                    js_result = await self.tab.execute_script(f'''
+                        fetch('/wapi/zpgeek/search/joblist.json?city={city}&query={query}&page=1&pageSize=30', {{credentials: "include"}})
+                            .then(function(r) {{ return r.text(); }})
+                            .catch(function(e) {{ return JSON.stringify({{error: e.message}}); }})
+                    ''')
+                    body = js_result.get("result", {}).get("result", {}).get("value", "")
+                    if body:
+                        data = orjson.loads(body)
+                        if data.get("message") == "Success":
+                            job_list = data.get("zpData", {}).get("jobList", [])
+                            if job_list:
+                                return job_list
+                        else:
+                            logger.debug(f"JS fetch API: {data.get('message', 'unknown')}")
+                except Exception as e:
+                    logger.debug(f"JS fetch failed: {e}")
+
                 job_cards = await job_element.find(
                     class_name="job-card-box", find_all=True
                 )

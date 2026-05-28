@@ -104,23 +104,24 @@ async def main() -> None:
             await insert_jobs(jobs_to_insert)
 
             for job in jobs_to_insert:
-                if job_schema.validate(job):
-                    job_id = job.get("encryptJobId")
-                    if job_id and not await Job.is_resolved(job_id):
-                        job_sec_id = job.get("securityId")
-                        logger.info(f"Queuing detail for securityId: {job_sec_id}")
-                        requests.append(
-                            Request.from_url(
-                                str(
-                                    URL(Config.JOB_DETAIL_API_URL).with_query({
-                                        "securityId": job_sec_id,
-                                    }),
-                                ),
-                                label="detail",
-                                user_data={"item": job},
-                                forefront=True,
+                job_id = job.get("encryptJobId")
+                if job_id and not await Job.is_resolved(job_id):
+                    job_sec_id = job.get("securityId")
+                    if not job_sec_id:
+                        continue
+                    logger.info(f"Queuing detail for securityId: {job_sec_id}")
+                    requests.append(
+                        Request.from_url(
+                            str(
+                                URL(Config.JOB_DETAIL_API_URL).with_query({
+                                    "securityId": job_sec_id,
+                                }),
                             ),
-                        )
+                            label="detail",
+                            user_data={"item": job},
+                            forefront=True,
+                        ),
+                    )
         await ctx.add_requests(requests)
 
     @crawler.router.handler("detail")
@@ -141,7 +142,7 @@ async def main() -> None:
                 data = r.get("zpData")
         except Exception as e:
             logger.exception(f"获取详情失败: {type(e).__name__}: {e}")
-        if not data or not job_detail_schema.validate(data):
+        if not data:
             logger.info("Falling back to authenticated service for job details")
             item = ctx.request.user_data.get("item")
             data = await pydoll_service.get_job_detail(job_to_job_detail(item))
@@ -161,8 +162,7 @@ async def main() -> None:
                 if job is None:
                     job = Job(id=job_id)
                 job.acceptable = job_detail_schema.validate(data)
-                if job.acceptable:
-                    job.detail = data
+                job.detail = data
                 job.contacted = False
                 job.last_inspection_time = arrow.Arrow.now().datetime
                 await job.save()
