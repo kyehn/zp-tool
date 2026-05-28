@@ -258,39 +258,43 @@ class PydollService:
 
     async def enable_request_blocking(self) -> None:
         async def block_resource(event: RequestPausedEvent) -> None:
-            request_id = event["params"]["requestId"]
-            url = event["params"]["request"]["url"]
-            for pattern in [
-                "https://www.zhipin.com/wapi/zpCommon/actionLog/common.json",
-                "https://static.zhipin.com/library/js/analytics/ka.zhipin*",
-                "https://z.zhipin.com/H5/js/plugins/web-report*",
-                "https://www.zhipin.com/wapi/zpuser/wap/getSecurityGuide*",
-                "https://static.zhipin.com/library/js/sdk/verify-sdk*",
-                "https://www.zhipin.com/wapi/zpCommon/data/getCityShowPosition",
-                "https://www.zhipin.com/wapi/zpgeek/history/joblist.json*",
-                "https://static.zhipin.com/*.gif",
-                "https://apm-fe.zhipin.com/*",
-                "https://static.zhipin.com/*.jpg",
-                "https://static.zhipin.com/*.png",
-                "https://www.zhipin.com/wapi/zpgeek/collection/popup/window",
-                "https://apm-fe-qa.weizhipin.com/*",
-                "https://logapi.zhipin.com/*",
-                "https://datastar-dev.weizhipin.com/*",
-                "https://z.zhipin.com/*",
-                "https://img.bosszhipin.com/*",
-                "https://hm.baidu.com/*",
-                "https://t.kanzhun.com/*",
-                "https://res.zhipin.com/*",
-                "https://c-res.zhipin.com/*",
-                "https://t.zhipin.com/*",
-            ]:
-                if fnmatch.fnmatch(url, pattern):
-                    await self.tab.fail_request(
-                        request_id,
-                        ErrorReason.BLOCKED_BY_CLIENT,
-                    )
+            try:
+                request_id = event["params"]["requestId"]
+                url = event["params"]["request"]["url"]
+                for pattern in [
+                    "https://www.zhipin.com/wapi/zpCommon/actionLog/common.json",
+                    "https://static.zhipin.com/library/js/analytics/ka.zhipin*",
+                    "https://z.zhipin.com/H5/js/plugins/web-report*",
+                    "https://www.zhipin.com/wapi/zpuser/wap/getSecurityGuide*",
+                    "https://static.zhipin.com/library/js/sdk/verify-sdk*",
+                    "https://www.zhipin.com/wapi/zpCommon/data/getCityShowPosition",
+                    "https://www.zhipin.com/wapi/zpgeek/history/joblist.json*",
+                    "https://static.zhipin.com/*.gif",
+                    "https://apm-fe.zhipin.com/*",
+                    "https://static.zhipin.com/*.jpg",
+                    "https://static.zhipin.com/*.png",
+                    "https://www.zhipin.com/wapi/zpgeek/collection/popup/window",
+                    "https://apm-fe-qa.weizhipin.com/*",
+                    "https://logapi.zhipin.com/*",
+                    "https://datastar-dev.weizhipin.com/*",
+                    "https://z.zhipin.com/*",
+                    "https://img.bosszhipin.com/*",
+                    "https://hm.baidu.com/*",
+                    "https://t.kanzhun.com/*",
+                    "https://res.zhipin.com/*",
+                    "https://c-res.zhipin.com/*",
+                    "https://t.zhipin.com/*",
+                ]:
+                    if fnmatch.fnmatch(url, pattern):
+                        await self.tab.fail_request(
+                            request_id,
+                            ErrorReason.BLOCKED_BY_CLIENT,
+                        )
+                        break
                 else:
                     await self.tab.continue_request(request_id)
+            except Exception:
+                pass
 
         await self.tab.enable_fetch_events()
         await self.tab.on(FetchEvent.REQUEST_PAUSED, block_resource)
