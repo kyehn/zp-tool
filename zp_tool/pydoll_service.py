@@ -202,19 +202,74 @@ class PydollService:
         await asyncio.sleep(0.1)
 
         stealth_js = '''
+            // Remove webdriver flag
+            Object.defineProperty(navigator, 'webdriver', {get: function() { return undefined; }});
+            delete navigator.__proto__.webdriver;
+            
+            // Fix language
             Object.defineProperty(navigator, 'language', {get: function() { return 'zh-CN'; }});
             Object.defineProperty(navigator, 'languages', {get: function() { return ['zh-CN', 'zh', 'en']; }});
+            
+            // Fix plugins
             Object.defineProperty(navigator, 'plugins', {
                 get: function() {
-                    return [
-                        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
-                        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
-                        {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                    var plugins = [
+                        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1},
+                        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', length: 1},
+                        {name: 'Native Client', filename: 'internal-nacl-plugin', description: '', length: 2},
                     ];
+                    plugins.length = 3;
+                    return plugins;
                 }
             });
+            
+            // Fix deviceMemory and hardwareConcurrency
+            Object.defineProperty(navigator, 'deviceMemory', {get: function() { return 8; }});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: function() { return 8; }});
+            Object.defineProperty(navigator, 'maxTouchPoints', {get: function() { return 0; }});
+            
+            // Fix chrome object - must be non-configurable to survive page JS overrides
             if (!window.chrome) { window.chrome = {}; }
-            if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+            Object.defineProperty(window.chrome, 'runtime', {
+                value: {
+                    id: undefined,
+                    connect: function() { return {onMessage: {addListener: function(){}}, postMessage: function(){}, disconnect: function(){} }; },
+                    sendMessage: function() {},
+                    onMessage: {addListener: function(){}, removeListener: function(){}},
+                    onInstalled: {addListener: function(){}},
+                    onConnect: {addListener: function(){}},
+                },
+                writable: false,
+                configurable: false,
+                enumerable: true,
+            });
+            if (!window.chrome.loadTimes) {
+                window.chrome.loadTimes = function() {
+                    return {requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000, commitLoadTime: Date.now() / 1000, finishDocumentLoadTime: Date.now() / 1000, finishLoadTime: Date.now() / 1000, firstPaintTime: Date.now() / 1000, firstPaintAfterLoadTime: 0, navigationType: 'Other', wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2', wasAlternateProtocolAvailable: false, connectionInfo: 'h2'};
+                };
+            }
+            if (!window.chrome.csi) {
+                window.chrome.csi = function() {
+                    return {onloadT: Date.now(), pageT: Date.now(), startE: Date.now()};
+                };
+            }
+            
+            // Prevent detection via toString
+            var nativeToString = Function.prototype.toString;
+            Function.prototype.toString = function() {
+                if (this === Function.prototype.toString) return 'function toString() { [native code] }';
+                return nativeToString.call(this);
+            };
+            
+            // Fix iframe contentWindow detection
+            var origCreateElement = document.createElement;
+            document.createElement = function(tag) {
+                var el = origCreateElement.call(document, tag);
+                if (tag.toLowerCase() === 'iframe') {
+                    Object.defineProperty(el.contentWindow.navigator, 'webdriver', {get: function() { return undefined; }});
+                }
+                return el;
+            };
         '''
         try:
             from pydoll.commands import PageCommands
