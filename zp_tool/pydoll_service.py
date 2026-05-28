@@ -125,7 +125,8 @@ class PydollService:
         options.add_argument("--disable-background-networking")
         options.add_argument("--dns-prefetch-disable")
         options.add_argument("--force-color-profile=srgb")
-        options.add_argument("--disable-features=NetworkPrediction,Translate")
+        options.add_argument("--disable-features=NetworkPrediction,Translate,AutomationControlled")
+        options.add_argument("--disable-blink-features=AutomationControlled")
 
         if available_gb < 1:
             options.add_argument("--renderer-process-limit=1")
@@ -199,6 +200,29 @@ class PydollService:
         await self.enable_request_blocking()
         await self.main_tab.enable_network_events()
         await asyncio.sleep(0.1)
+
+        stealth_js = '''
+            Object.defineProperty(navigator, 'language', {get: function() { return 'zh-CN'; }});
+            Object.defineProperty(navigator, 'languages', {get: function() { return ['zh-CN', 'zh', 'en']; }});
+            Object.defineProperty(navigator, 'plugins', {
+                get: function() {
+                    return [
+                        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
+                        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
+                        {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
+                    ];
+                }
+            });
+            if (!window.chrome) { window.chrome = {}; }
+            if (!window.chrome.runtime) { window.chrome.runtime = {}; }
+        '''
+        try:
+            from pydoll.commands import PageCommands
+            await self.main_tab._execute_command(
+                PageCommands.add_script_to_evaluate_on_new_document(stealth_js)
+            )
+        except Exception as e:
+            logger.debug(f"Failed to add stealth script via CDP: {e}")
         if Config.cfg.use_session_account and self.use_main_tab:
             await self.login()
         if (await self.is_logged_in()) and self.use_guest_tab:
