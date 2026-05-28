@@ -1,6 +1,7 @@
 import asyncio
 import fnmatch
 import os
+import random
 import re
 import shutil
 import sys
@@ -165,6 +166,13 @@ class PydollService:
         options.add_argument("--use-gl=swiftshader")
         options.add_argument("--disable-vulkan")
         options.add_argument("--disable-vulkan-fallback-to-glnext")
+
+        proxy = os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY")
+        if not proxy and hasattr(Config.cfg, "proxy") and Config.cfg.proxy:
+            proxy = Config.cfg.proxy
+        if proxy:
+            options.add_argument(f"--proxy-server={proxy}")
+            logger.info(f"Using proxy: {proxy}")
 
         if available_gb < 1:
             options.start_timeout = 60
@@ -384,6 +392,7 @@ class PydollService:
                 await self.main_tab.enable_network_events()
                 await asyncio.sleep(0.1)
             try:
+                await asyncio.sleep(random.uniform(1.0, 3.0))
                 await self.tab.go_to(url)
                 job_element = await self.tab.query(
                     ".job-list-container, .job-empty-wrapper",

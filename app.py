@@ -37,6 +37,7 @@ class AppConfig:
     experience: str = ""
     degree: str = ""
     scale: str = ""
+    proxy: str = ""
     hydra: Any = field(default_factory=dict)
 
 
