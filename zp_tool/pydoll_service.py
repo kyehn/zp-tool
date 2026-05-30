@@ -4,7 +4,9 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import orjson
@@ -450,6 +452,146 @@ class PydollService:
                     await self.tab.take_screenshot("error/page.png", quality=100)
                     sys.exit(text)
 
+    async def _ensure_token(self) -> str | None:
+        try:
+            js = "document.cookie.match(/__zp_stoken__=([^;]+)/)?.[1] || ''"
+            result = await self.tab.execute_script(js)
+            if isinstance(result, dict):
+                stoken = result.get("result", {}).get("result", {}).get("value", "")
+            elif isinstance(result, str):
+                stoken = result
+            else:
+                stoken = ""
+            if stoken:
+                return stoken
+        except Exception:
+            pass
+        stoken = await self._generate_token_via_browser()
+        if stoken:
+            return stoken
+        return None
+
+    async def _generate_token_via_browser(self) -> str | None:
+        try:
+            seed = None
+            ts_val = None
+            name = None
+            logs = await self.tab.get_network_logs(filter="/wapi/zpgeek/search/joblist")
+            for log in logs:
+                request_id = log.get("params", {}).get("requestId")
+                if not request_id:
+                    continue
+                try:
+                    body = await self.tab.get_network_response_body(request_id)
+                    data = orjson.loads(body)
+                    if data.get("code") == 37:
+                        zp = data.get("zpData", {})
+                        seed = zp.get("seed")
+                        ts_val = int(zp.get("ts", 0))
+                        name = zp.get("name")
+                        break
+                except Exception:
+                    continue
+            if not seed:
+                resp = await self.tab.request.get(
+                    "https://www.zhipin.com/wapi/zpgeek/search/joblist.json?city=101280600&query=python&page=1&pageSize=15"
+                )
+                data = orjson.loads(resp.text)
+                if data.get("code") == 37:
+                    zp = data.get("zpData", {})
+                    seed = zp.get("seed")
+                    ts_val = int(zp.get("ts", 0))
+                    name = zp.get("name")
+            if not seed:
+                logger.warning("Cannot get security params for token generation")
+                return await self._generate_token_via_node()
+
+            sec_url = (
+                f"https://www.zhipin.com/web/common/security-check.html"
+                f"?seed={seed}&ts={ts_val}&name={name}"
+                f"&callbackUrl=/web/geek/job?city=101280600&query=python"
+            )
+            await self.tab.go_to(sec_url)
+            for _ in range(15):
+                await asyncio.sleep(1)
+                try:
+                    js = "document.cookie.match(/__zp_stoken__=([^;]+)/)?.[1] || ''"
+                    result = await self.tab.execute_script(js)
+                    if isinstance(result, dict):
+                        stoken = result.get("result", {}).get("result", {}).get("value", "")
+                    else:
+                        stoken = ""
+                    if stoken:
+                        logger.info(f"Generated __zp_stoken__ via browser")
+                        return stoken
+                except Exception:
+                    pass
+                if "about:blank" in (await self.tab.current_url):
+                    break
+            logger.warning("Browser token generation failed, trying Node.js")
+            return await self._generate_token_via_node(seed, ts_val, name)
+        except Exception as e:
+            logger.warning(f"Browser token generation failed: {e}")
+            return await self._generate_token_via_node()
+
+    async def _generate_token_via_node(
+        self, seed: str | None = None, ts: int | None = None, name: str | None = None
+    ) -> str | None:
+        try:
+            if not seed or not ts or not name:
+                resp = await self.tab.request.get(
+                    "https://www.zhipin.com/wapi/zpgeek/search/joblist.json?city=101280600&query=python&page=1&pageSize=15"
+                )
+                data = orjson.loads(resp.text)
+                if data.get("code") != 37:
+                    return None
+                zp = data.get("zpData", {})
+                seed = zp.get("seed")
+                ts_val = zp.get("ts")
+                name = zp.get("name")
+            else:
+                ts_val = ts
+
+            js_url = f"https://www.zhipin.com/web/common/security-js/{name}.js"
+            js_resp = await self.tab.request.get(js_url)
+            js_path = "/tmp/_zp_sec.js"
+            with open(js_path, "w") as f:
+                f.write(js_resp.text)
+
+            local_offset = -time.timezone / 60
+            adjusted_ts = ts_val + int(60 * (480 + local_offset) * 1000)
+
+            node_code = f"""
+const fs = require('fs');
+global.window = global;
+global.document = {{createElement: ()=>{{setAttribute:()=>{{}}, appendChild:()=>{{}}, style:{{}}}}, documentElement: {{appendChild: ()=>{{}}}}}};
+global.navigator = {{userAgent: 'Mozilla/5.0'}};
+global.location = {{href: 'https://www.zhipin.com/web/common/security-check.html?seed={seed}&ts={ts_val}&name={name}'}};
+global.btoa = (s) => Buffer.from(s).toString('base64');
+global.atob = (s) => Buffer.from(s, 'base64').toString();
+const code = fs.readFileSync('/tmp/_zp_sec.js', 'utf-8');
+eval(code);
+if (global.ABC) {{
+    const token = new global.ABC().z('{seed}', {adjusted_ts});
+    console.log('TOKEN:' + token);
+}} else {{
+    console.log('ABC_NOT_FOUND');
+}}
+"""
+            result = subprocess.run(
+                ["node", "-e", node_code], capture_output=True, text=True, timeout=15
+            )
+            match = re.search(r'TOKEN:(.+)', result.stdout)
+            if match:
+                token = match.group(1).strip()
+                logger.info(f"Generated __zp_stoken__ via Node.js ({len(token)} chars)")
+                return token
+            logger.warning(f"Node.js token generation failed: {result.stdout[:200]}")
+            return None
+        except Exception as e:
+            logger.warning(f"Node.js token gen error: {e}")
+            return None
+
     def _find_chromium_binary(self) -> str:
         for name in (
             "chrome",
@@ -496,6 +638,7 @@ class PydollService:
                 logs = await self.tab.get_network_logs(
                     filter="/wapi/zpgeek/search/joblist"
                 )
+                needs_token = False
                 for log in logs:
                     request_id = log.get("params", {}).get("requestId")
                     if not request_id:
@@ -508,11 +651,46 @@ class PydollService:
                             data = orjson.loads(response_body)
                             if data.get("message") == "Success":
                                 job_list.extend(data.get("zpData", {}).get("jobList", []))
+                            elif data.get("code") == 37:
+                                needs_token = True
                     except Exception:
                         continue
 
                 if job_list:
                     return job_list
+
+                if needs_token and not Config.cfg.use_session_account:
+                    logger.info("Code 37 detected, generating __zp_stoken__")
+                    stoken = await self._ensure_token()
+                    if stoken:
+                        logger.info(f"Token obtained, retrying API call")
+                        try:
+                            parsed = URL(str(self.tab.url))
+                            params = dict(parsed.query)
+                            city = params.get("city", "")
+                            query = params.get("query", "")
+                            js_result = await self.tab.execute_script(f'''
+                                (async () => {{
+                                    try {{
+                                        document.cookie = "__zp_stoken__={stoken}; path=/; domain=.zhipin.com";
+                                        const r = await fetch('/wapi/zpgeek/search/joblist.json?city={city}&query={query}&page=1&pageSize=30', {{{{credentials: "include"}}}});
+                                        const text = await r.text();
+                                        return text;
+                                    }} catch(e) {{ return JSON.stringify({{error: e.message}}); }}
+                                }})()
+                            ''')
+                            body = ""
+                            if isinstance(js_result, dict):
+                                body = js_result.get("result", {}).get("result", {}).get("value", "")
+                            if body:
+                                data = orjson.loads(body)
+                                if data.get("message") == "Success":
+                                    job_list = data.get("zpData", {}).get("jobList", [])
+                                    if job_list:
+                                        logger.info(f"Got {len(job_list)} jobs via token")
+                                        return job_list
+                        except Exception as e:
+                            logger.debug(f"Token retry failed: {e}")
 
                 try:
                     parsed = URL(str(self.tab.url))

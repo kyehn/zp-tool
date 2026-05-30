@@ -135,7 +135,16 @@ async def main() -> None:
         ctx.log.info(f"detail_handler is processing {ctx.request.url}")
         data: dict[str, Any] | None = None
         try:
-            response = await pydoll_service.tab.request.get(ctx.request.url)
+            stoken = await pydoll_service._ensure_token()
+            detail_url = ctx.request.url
+            if stoken:
+                detail_url = str(URL(detail_url).with_query({
+                    **dict(URL(detail_url).query),
+                    "__zp_stoken__": stoken,
+                }))
+                response = await pydoll_service.tab.request.get(detail_url)
+            else:
+                response = await pydoll_service.tab.request.get(ctx.request.url)
             r = orjson.loads(response.text)
             logger.debug(f"Anonymous response: {r}")
             if r.get("message") == "Success":
